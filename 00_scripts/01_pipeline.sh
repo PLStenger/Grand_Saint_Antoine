@@ -135,21 +135,28 @@ for marker in "${MARKERS[@]}"; do
     --input-format PairedEndFastqManifestPhred33V2 \
     --output-path "$demux"
 
-  qiime cutadapt trim-paired \
-    --i-demultiplexed-sequences "$demux" \
-    --p-cores "$THREADS" \
-    --p-front-f "${PRIMER_F[$marker]}" \
-    --p-front-r "${PRIMER_R[$marker]}" \
-    --p-adapter-f "$ILLUMINA_FWD" \
-    --p-adapter-r "$ILLUMINA_REV" \
-    --p-match-read-wildcards \
-    --p-discard-untrimmed \
-    --p-no-indels \
-    --o-trimmed-sequences "$trimmed" \
-    --o-stats "$cutadapt_stats" \
-    --verbose \
-    2>&1 | tee "$WORKDIR/logs/cutadapt_${marker}.log"
+ILLUMINA_FWD="AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC"
+ILLUMINA_REV="AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"
 
+if [[ -z "${ILLUMINA_FWD:-}" || -z "${ILLUMINA_REV:-}" ]]; then
+  echo "ERREUR: les séquences d'adaptateur Illumina ne sont pas définies" >&2
+  exit 1
+fi
+
+ qiime cutadapt trim-paired \
+  --i-demultiplexed-sequences "$demux_${marker}.qza" \
+  --p-cores "$THREADS" \
+  --p-front-f "${PRIMER_F[$marker]}" \
+  --p-front-r "${PRIMER_R[$marker]}" \
+  --p-adapter-f "$ILLUMINA_FWD" \
+  --p-adapter-r "$ILLUMINA_REV" \
+  --p-match-read-wildcards \
+  --p-discard-untrimmed \
+  --p-no-indels \
+  --o-trimmed-sequences "$WORKDIR/trimmed/trimmed_${marker}.qza" \
+  --o-stats "$WORKDIR/trimmed/cutadapt_${marker}_stats.qza" \
+  --verbose
+  
   qiime demux summarize \
     --i-data "$trimmed" \
     --o-visualization "$trimmed_qzv"
