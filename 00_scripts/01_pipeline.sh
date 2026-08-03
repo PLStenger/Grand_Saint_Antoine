@@ -123,11 +123,11 @@ echo "Metadata écrite : $meta"
 # 3. Import QIIME2 + suppression primers (cutadapt) + DADA2, par marqueur
 #####################################################
 for marker in "${MARKERS[@]}"; do
-  echo "=== Traitement marqueur $marker ==="
   manifest="$WORKDIR/manifests/manifest_${marker}.tsv"
   demux="$WORKDIR/imported/demux_${marker}.qza"
   trimmed="$WORKDIR/trimmed/trimmed_${marker}.qza"
   trimmed_qzv="$WORKDIR/trimmed/trimmed_${marker}.qzv"
+  cutadapt_stats="$WORKDIR/trimmed/cutadapt_${marker}_stats.qza"
 
   qiime tools import \
     --type 'SampleData[PairedEndSequencesWithQuality]' \
@@ -140,17 +140,19 @@ for marker in "${MARKERS[@]}"; do
     --p-cores "$THREADS" \
     --p-front-f "${PRIMER_F[$marker]}" \
     --p-front-r "${PRIMER_R[$marker]}" \
+    --p-adapter-f "$ILLUMINA_FWD" \
+    --p-adapter-r "$ILLUMINA_REV" \
     --p-match-read-wildcards \
     --p-discard-untrimmed \
     --p-no-indels \
     --o-trimmed-sequences "$trimmed" \
-    --verbose > "$WORKDIR/trimmed/cutadapt_${marker}.log"
+    --o-stats "$cutadapt_stats" \
+    --verbose \
+    2>&1 | tee "$WORKDIR/logs/cutadapt_${marker}.log"
 
   qiime demux summarize \
     --i-data "$trimmed" \
     --o-visualization "$trimmed_qzv"
-
-  echo "-> Inspecter $trimmed_qzv pour choisir les longueurs de troncature DADA2"
 done
 
 #####################################################
@@ -162,11 +164,11 @@ done
 #####################################################
 declare -A TRUNC_F
 declare -A TRUNC_R
-TRUNC_F[m1]=0   # pla   - ajuster après inspection qzv (0 = pas de troncature)
+TRUNC_F[m1]=0
 TRUNC_R[m1]=0
-TRUNC_F[m2]=0   # caf
+TRUNC_F[m2]=0
 TRUNC_R[m2]=0
-TRUNC_F[m3]=280 # V4V5
+TRUNC_F[m3]=280
 TRUNC_R[m3]=220
 
 for marker in "${MARKERS[@]}"; do
@@ -174,6 +176,8 @@ for marker in "${MARKERS[@]}"; do
   table="$WORKDIR/dada2/table_${marker}.qza"
   repseqs="$WORKDIR/dada2/rep-seqs_${marker}.qza"
   stats="$WORKDIR/dada2/stats_${marker}.qza"
+
+  [[ -f "$trimmed" ]] || { echo "ERREUR: fichier absent $trimmed" >&2; exit 1; }
 
   qiime dada2 denoise-paired \
     --i-demultiplexed-seqs "$trimmed" \
