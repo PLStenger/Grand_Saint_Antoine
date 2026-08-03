@@ -48,29 +48,55 @@ PRIMER_R[m3]="CCGYCAATTYMTTTRAGTTT"         # V4V5  R (926R)
 MARKERS=(m1 m2 m3)
 
 #####################################################
-# 1. Construction des manifests (un par marqueur)
+# 1. Construction des manifests (version précise GSA)
+#    On ne prend QUE les dossiers explicitement attendus
 #####################################################
-# Structure attendue : $BASEDIR/<ID>-<Rep>-<marker>/<sampleid>_R1.fastq.gz
-# ex: $BASEDIR/1A-m1/1a-m1_R1.fastq.gz  
+
+# Liste stricte des dossiers GSA autorisés
+GSA_DIRS=(
+  1A-m1 2A-m1 3A-m1 4A-m1 6A-m1 NTC-A-m1
+  1B-m1 2B-m1 3B-m1 4B-m1 6B-m1 NTC-B-m1
+  1C-m1 2C-m1 3C-m1 4C-m1 6C-m1 NTC-C-m1
+  Neg-m1
+  1A-m2 2A-m2 3A-m2 4A-m2 6A-m2 NTC-A-m2
+  1B-m2 2B-m2 3B-m2 4B-m2 6B-m2 NTC-B-m2
+  1C-m2 2C-m2 3C-m2 4C-m2 6C-m2 NTC-C-m2
+  Neg-m2
+  1A-m3 2A-m3 3A-m3 4A-m3 6A-m3 NTC-A-m3
+  1B-m3 2B-m3 3B-m3 4B-m3 6B-m3 NTC-B-m3
+  1C-m3 2C-m3 3C-m3 4C-m3 6C-m3 NTC-C-m3
+  Neg-m3
+)
 
 for marker in "${MARKERS[@]}"; do
   manifest="$WORKDIR/manifests/manifest_${marker}.tsv"
-  echo -e "sample-id\tforward-absolute-filepath\treverse-absolute-filepath" > "$manifest"
+  printf "sample-id\tforward-absolute-filepath\treverse-absolute-filepath\n" > "$manifest"
 
-  for d in "$BASEDIR"/*-"$marker"; do
-    [ -d "$d" ] || continue
-    sampledir=$(basename "$d")                 # ex: 1A-m1, NTC-A-m1, Neg-m1
-    r1=$(find "$d" -maxdepth 1 -iname "*_R1*.fastq.gz" | head -n1)
-    r2=$(find "$d" -maxdepth 1 -iname "*_R2*.fastq.gz" | head -n1)
+  for sampledir in "${GSA_DIRS[@]}"; do
+    [[ "$sampledir" == *-"$marker" ]] || continue
+    d="$BASEDIR/$sampledir"
+
+    if [[ ! -d "$d" ]]; then
+      echo "ATTENTION: dossier absent: $d" >&2
+      continue
+    fi
+
+    r1=$(find "$d" -maxdepth 1 -type f -iname "*_R1*.fastq.gz" | sort | head -n1)
+    r2=$(find "$d" -maxdepth 1 -type f -iname "*_R2*.fastq.gz" | sort | head -n1)
+
     if [[ -z "$r1" || -z "$r2" ]]; then
       echo "ATTENTION: fastq manquants dans $d" >&2
       continue
     fi
-    # sample-id QIIME2 = nom du dossier (garanti unique)
-    echo -e "${sampledir}\t${r1}\t${r2}" >> "$manifest"
+
+    printf "%s\t%s\t%s\n" "$sampledir" "$r1" "$r2" >> "$manifest"
   done
-  echo "Manifest ${marker} : $manifest ($(($(wc -l < "$manifest")-1)) échantillons)"
-done
+
+  echo "Manifest ${marker} : $manifest"
+  column -t -s $'\t' "$manifest" | head
+  echo
+ done
+
 
 #####################################################
 # 2. Fichier de métadonnées (commun, avec statut contrôle)
