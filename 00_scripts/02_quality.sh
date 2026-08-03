@@ -21,8 +21,8 @@ conda activate metagenomics
 # Utilise une liste blanche stricte des dossiers du projet pour éviter
 # d'inclure d'autres projets présents dans le même répertoire.
 
-BASEDIR="/storage/groups/gdec/shared_paleo/filtermask"
-WORKDIR="/home/plstenge/Grand_Saint_Antoine/02_qc"
+BASEDIR="/storage/groups/gdec/shared_paleo/default"
+WORKDIR="/home/plstenge/Grand_Saint_Antoine/02_qc_default"
 THREADS="${THREADS:-16}"
 
 mkdir -p "$WORKDIR"/{lists,fastqc,multiqc,logs}
