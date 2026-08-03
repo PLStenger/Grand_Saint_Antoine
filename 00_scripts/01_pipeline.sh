@@ -181,7 +181,6 @@ done
 
 #####################################################
 # 4. DADA2 (denoise-paired) par marqueur
-#    IMPORTANT : inspecter les .qzv de l'étape 3 pour ajuster si besoin
 #####################################################
 declare -A TRUNC_F
 declare -A TRUNC_R
@@ -197,8 +196,9 @@ for marker in "${MARKERS[@]}"; do
   table="$WORKDIR/dada2/table_${marker}.qza"
   repseqs="$WORKDIR/dada2/rep-seqs_${marker}.qza"
   stats="$WORKDIR/dada2/stats_${marker}.qza"
+  bt_stats="$WORKDIR/dada2/base-transition-stats_${marker}.qza"
 
-  [[ -f "$trimmed" ]] || { echo "ERREUR: fichier absent $trimmed" >&2; exit 1; }
+  [[ -f "$trimmed" ]] || { echo "ERREUR: fichier absent $trimmed" >&2; continue; }
 
   qiime dada2 denoise-paired \
     --i-demultiplexed-seqs "$trimmed" \
@@ -208,13 +208,18 @@ for marker in "${MARKERS[@]}"; do
     --o-table "$table" \
     --o-representative-sequences "$repseqs" \
     --o-denoising-stats "$stats" \
+    --o-base-transition-stats "$bt_stats" \
     --verbose
 
+  # Résumés de la table
   qiime feature-table summarize \
     --i-table "$table" \
-    --m-sample-metadata-file "$meta" \
-    --o-visualization "$WORKDIR/dada2/table_${marker}.qzv"
+    --m-metadata-file "$meta" \
+    --o-feature-frequencies "$WORKDIR/dada2/feature-freq_${marker}.qza" \
+    --o-sample-frequencies "$WORKDIR/dada2/sample-freq_${marker}.qza" \
+    --o-summary "$WORKDIR/dada2/table_${marker}.qzv"
 
+  # Visualisation des séquences représentatives
   qiime feature-table tabulate-seqs \
     --i-data "$repseqs" \
     --o-visualization "$WORKDIR/dada2/rep-seqs_${marker}.qzv"
