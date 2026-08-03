@@ -95,10 +95,6 @@ for marker in "${MARKERS[@]}"; do
 
     printf "%s\t%s\t%s\n" "$sampledir" "$r1" "$r2" >> "$manifest"
   done
-
-  echo "Manifest ${marker} : $manifest"
-  column -t -s $'\t' "$manifest" | head
-  echo
 done
 
 #####################################################
