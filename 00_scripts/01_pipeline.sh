@@ -25,8 +25,8 @@ conda activate rachis-qiime2-2026.7
 ########################
 # 0. Paramètres généraux
 ########################
-BASEDIR="/storage/groups/gdec/shared_paleo/filtermask"
-WORKDIR="/home/plstenge/Grand_Saint_Antoine"
+BASEDIR="/storage/groups/gdec/shared_paleo/E1739/filtermask"
+WORKDIR="/home/plstenge/Grand_Saint_Antoine/02_filtermask_pipeline"
 THREADS=16
 USE_ILLUMINA_ADAPTER_TRIM=0
 
