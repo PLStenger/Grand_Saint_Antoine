@@ -12,15 +12,14 @@
 # ==============================================================================
 # ENVIRONMENT SETUP
 # ==============================================================================
-
 module load conda/4.12.0
 source ~/.bashrc
 conda activate rachis-qiime2-2026.7
 
 #############################################################################
-# Pipeline QIIME2 - Analyse multi-marqueurs (pla, caf, V4V5) avec gestion
-#                    des contrôles négatifs (NTC / Neg)
-# Environnement : conda activate rachis-qiime2-2026.7
+# Pipeline QIIME2 - Analyse multi-marqueurs (pla, caf, V4V5)
+# avec gestion des contrôles négatifs (NTC / Neg)
+# Version corrigée complète
 #############################################################################
 
 ########################
@@ -29,30 +28,35 @@ conda activate rachis-qiime2-2026.7
 BASEDIR="/storage/groups/gdec/shared_paleo/filtermask"
 WORKDIR="/home/plstenge/Grand_Saint_Antoine"
 THREADS=16
+USE_ILLUMINA_ADAPTER_TRIM=0
 
-mkdir -p "$WORKDIR"/{manifests,imported,trimmed,dada2,taxonomy,decontam,exports,metadata}
+mkdir -p "$WORKDIR"/{manifests,imported,trimmed,dada2,taxonomy,decontam,exports,metadata,logs}
 cd "$WORKDIR"
 
-# Marqueurs et primers (truseq stub retiré : on garde uniquement la partie
-# spécifique du primer après les Ns, cutadapt gère le reste via --p-front)
+# Primers spécifiques après les Ns
+# m1: pla ; m2: caf1 ; m3: V4V5
+
 declare -A PRIMER_F
 declare -A PRIMER_R
-
-PRIMER_F[m1]="GACTGGGTTCGGGCACATG"          # pla   F
-PRIMER_R[m1]="AGACTTTGGCATTAGGTGTG"         # pla   R
-PRIMER_F[m2]="aaccagcccgcatcactctta"        # caf1  F
-PRIMER_R[m2]="atcacccgcggcatctgta"          # caf1  R
-PRIMER_F[m3]="GTGYCAGCMGCCGCGGTAA"          # V4V5  F (515F-Y)
-PRIMER_R[m3]="CCGYCAATTYMTTTRAGTTT"         # V4V5  R (926R)
+PRIMER_F[m1]="GACTGGGTTCGGGCACATG"
+PRIMER_R[m1]="AGACTTTGGCATTAGGTGTG"
+PRIMER_F[m2]="aaccagcccgcatcactctta"
+PRIMER_R[m2]="atcacccgcggcatctgta"
+PRIMER_F[m3]="GTGYCAGCMGCCGCGGTAA"
+PRIMER_R[m3]="CCGYCAATTYMTTTRAGTTT"
 
 MARKERS=(m1 m2 m3)
+
+# Adaptateurs Illumina universels
+# Désactivés par défaut car cela avait généré un passage d'adaptateur vide dans q2-cutadapt.
+# Active-les seulement si tu veux explicitement les enlever à cette étape.
+ILLUMINA_FWD="AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC"
+ILLUMINA_REV="AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"
 
 #####################################################
 # 1. Construction des manifests (version précise GSA)
 #    On ne prend QUE les dossiers explicitement attendus
 #####################################################
-
-# Liste stricte des dossiers GSA autorisés
 GSA_DIRS=(
   1A-m1 2A-m1 3A-m1 4A-m1 6A-m1 NTC-A-m1
   1B-m1 2B-m1 3B-m1 4B-m1 6B-m1 NTC-B-m1
@@ -95,14 +99,13 @@ for marker in "${MARKERS[@]}"; do
   echo "Manifest ${marker} : $manifest"
   column -t -s $'\t' "$manifest" | head
   echo
- done
-
+done
 
 #####################################################
 # 2. Fichier de métadonnées (commun, avec statut contrôle)
 #####################################################
 meta="$WORKDIR/metadata/sample-metadata.tsv"
-echo -e "sample-id\tsample\treplicate\tmarker\tsample-or-control" > "$meta"
+printf "sample-id\tsample\treplicate\tmarker\tsample-or-control\n" > "$meta"
 
 for marker in "${MARKERS[@]}"; do
   tail -n +2 "$WORKDIR/manifests/manifest_${marker}.tsv" | cut -f1 | while read -r sid; do
@@ -111,16 +114,21 @@ for marker in "${MARKERS[@]}"; do
     else
       status="sample"
     fi
-    # extraction sample (chiffre) et replicat (lettre) quand applicable
-    samplenum=$(echo "$sid" | grep -oP '^[0-9]+' || echo "NA")
-    repl=$(echo "$sid" | grep -oP '(?<=[0-9])[A-C]|(?<=NTC-)[A-C]' || echo "NA")
-    echo -e "${sid}\t${samplenum}\t${repl}\t${marker}\t${status}" >> "$meta"
+
+    samplenum=$(echo "$sid" | grep -oP '^[0-9]+' || true)
+    [[ -n "${samplenum:-}" ]] || samplenum="NA"
+
+    repl=$(echo "$sid" | grep -oP '(?<=[0-9])[A-C]|(?<=NTC-)[A-C]' || true)
+    [[ -n "${repl:-}" ]] || repl="NA"
+
+    printf "%s\t%s\t%s\t%s\t%s\n" "$sid" "$samplenum" "$repl" "$marker" "$status" >> "$meta"
   done
 done
+
 echo "Metadata écrite : $meta"
 
 #####################################################
-# 3. Import QIIME2 + suppression primers (cutadapt) + DADA2, par marqueur
+# 3. Import QIIME2 + suppression primers/adaptateurs (cutadapt)
 #####################################################
 for marker in "${MARKERS[@]}"; do
   manifest="$WORKDIR/manifests/manifest_${marker}.tsv"
@@ -135,28 +143,38 @@ for marker in "${MARKERS[@]}"; do
     --input-format PairedEndFastqManifestPhred33V2 \
     --output-path "$demux"
 
-ILLUMINA_FWD="AGATCGGAAGAGCACACGTCTGAACTCCAGTCAC"
-ILLUMINA_REV="AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"
+  if [[ "$USE_ILLUMINA_ADAPTER_TRIM" -eq 1 ]]; then
+    qiime cutadapt trim-paired \
+      --i-demultiplexed-sequences "$demux" \
+      --p-cores "$THREADS" \
+      --p-front-f "${PRIMER_F[$marker]}" \
+      --p-front-r "${PRIMER_R[$marker]}" \
+      --p-adapter-f "$ILLUMINA_FWD" \
+      --p-adapter-r "$ILLUMINA_REV" \
+      --p-match-read-wildcards \
+      --p-discard-untrimmed \
+      --p-no-indels \
+      --o-trimmed-sequences "$trimmed" \
+      --o-stats "$cutadapt_stats" \
+      --verbose \
+      2>&1 | tee "$WORKDIR/logs/cutadapt_${marker}.log"
+  else
+    qiime cutadapt trim-paired \
+      --i-demultiplexed-sequences "$demux" \
+      --p-cores "$THREADS" \
+      --p-front-f "${PRIMER_F[$marker]}" \
+      --p-front-r "${PRIMER_R[$marker]}" \
+      --p-match-read-wildcards \
+      --p-discard-untrimmed \
+      --p-no-indels \
+      --o-trimmed-sequences "$trimmed" \
+      --o-stats "$cutadapt_stats" \
+      --verbose \
+      2>&1 | tee "$WORKDIR/logs/cutadapt_${marker}.log"
+  fi
 
-if [[ -z "${ILLUMINA_FWD:-}" || -z "${ILLUMINA_REV:-}" ]]; then
-  echo "ERREUR: les séquences d'adaptateur Illumina ne sont pas définies" >&2
-  exit 1
-fi
+  [[ -f "$trimmed" ]] || { echo "ERREUR: cutadapt n'a pas créé $trimmed" >&2; exit 1; }
 
- qiime cutadapt trim-paired \
-  --i-demultiplexed-sequences "$demux_${marker}.qza" \
-  --p-cores "$THREADS" \
-  --p-front-f "${PRIMER_F[$marker]}" \
-  --p-front-r "${PRIMER_R[$marker]}" \
-  --p-adapter-f "$ILLUMINA_FWD" \
-  --p-adapter-r "$ILLUMINA_REV" \
-  --p-match-read-wildcards \
-  --p-discard-untrimmed \
-  --p-no-indels \
-  --o-trimmed-sequences "$WORKDIR/trimmed/trimmed_${marker}.qza" \
-  --o-stats "$WORKDIR/trimmed/cutadapt_${marker}_stats.qza" \
-  --verbose
-  
   qiime demux summarize \
     --i-data "$trimmed" \
     --o-visualization "$trimmed_qzv"
@@ -164,10 +182,7 @@ done
 
 #####################################################
 # 4. DADA2 (denoise-paired) par marqueur
-#    IMPORTANT : ouvrez les .qzv de l'étape 3 (qiime tools view) pour
-#    ajuster --p-trunc-len-f/--p-trunc-len-r selon la qualité + la longueur
-#    attendue de l'amplicon (pla/caf ~ courts, V4V5 ~ 400 pb).
-#    Les valeurs ci-dessous sont des points de départ à valider.
+#    IMPORTANT : inspecter les .qzv de l'étape 3 pour ajuster si besoin
 #####################################################
 declare -A TRUNC_F
 declare -A TRUNC_R
@@ -207,23 +222,16 @@ for marker in "${MARKERS[@]}"; do
 done
 
 #####################################################
-# 5. Taxonomie (avec téléchargement/construction automatique des bases
-#    si elles sont absentes)
-#    - V4V5 (m3) : classificateur SILVA pré-entraîné, téléchargé depuis
-#      data.qiime2.org s'il n'existe pas déjà localement.
-#    - pla / caf (m1, m2) : pas de base publique pré-entraînée ->
-#      construction automatique d'une base de référence via
-#      `qiime rescript get-ncbi-data` (NCBI) si les fichiers n'existent pas.
+# 5. Taxonomie
+#    - V4V5 (m3) : classificateur SILVA téléchargé si absent
+#    - pla / caf (m1, m2) : base NCBI construite si absente
 #####################################################
-
 SILVA_URL="https://data.qiime2.org/2024.5/common/silva-138-99-nb-classifier.qza"
 CLASSIFIER="$WORKDIR/taxonomy/silva-138-99-nb-classifier.qza"
 
-# --- V4V5 : téléchargement auto du classificateur SILVA si absent ---
 if [[ ! -f "$CLASSIFIER" ]]; then
   echo "Classificateur SILVA absent -> téléchargement en cours..."
   wget -c -O "$CLASSIFIER" "$SILVA_URL"
-  # Vérification basique que le fichier est bien un artefact QIIME2 (zip) et pas une page d'erreur HTML
   if ! unzip -l "$CLASSIFIER" >/dev/null 2>&1; then
     echo "ERREUR : le téléchargement du classificateur SILVA a échoué (fichier invalide)." >&2
     rm -f "$CLASSIFIER"
@@ -240,13 +248,6 @@ else
   echo "ATTENTION : classification V4V5 impossible, classificateur SILVA introuvable." >&2
 fi
 
-# --- pla / caf : construction automatique d'une base de référence NCBI ---
-# Requêtes Entrez ciblées sur les gènes plasminogen activator (pla) et
-# antigène F1 capsulaire (caf1) de Yersinia pestis / Enterobacteriaceae.
-# NB : nécessite une connexion internet et le plugin RESCRIPt
-# (conda install -c bioconda -c conda-forge rescript, ou déjà inclus dans
-# certains environnements qiime2-amplicon).
-
 declare -A NCBI_QUERY
 NCBI_QUERY[m1]='(Yersinia pestis[Organism] AND pla[Gene]) AND (plasminogen activator[Title] OR pla[Title])'
 NCBI_QUERY[m2]='(Yersinia pestis[Organism] OR Enterobacteriaceae[Organism]) AND (caf1[Gene] OR "capsular antigen F1"[Title] OR caf1[Title])'
@@ -259,6 +260,8 @@ for marker in m1 m2; do
     echo "Base de référence ${marker} absente -> construction automatique depuis NCBI..."
     RAW_SEQS="$WORKDIR/taxonomy/ncbi-${marker}-seqs-raw.qza"
     RAW_TAX="$WORKDIR/taxonomy/ncbi-${marker}-tax-raw.qza"
+    CULLED_SEQS="$WORKDIR/taxonomy/ncbi-${marker}-seqs-culled.qza"
+    DISCARDED_SEQS="$WORKDIR/taxonomy/ncbi-${marker}-seqs-discarded.qza"
 
     qiime rescript get-ncbi-data \
       --p-query "${NCBI_QUERY[$marker]}" \
@@ -267,26 +270,20 @@ for marker in m1 m2; do
       --o-taxonomy "$RAW_TAX" \
       --verbose
 
-    # Nettoyage minimal : retrait des séquences dégénérées/homopolymères
-    # et filtrage de longueur (ajuster selon la taille attendue des amplicons)
     qiime rescript cull-seqs \
       --i-sequences "$RAW_SEQS" \
       --p-num-degenerates 5 \
       --p-homopolymer-length 12 \
-      --o-clean-sequences "$WORKDIR/taxonomy/ncbi-${marker}-seqs-culled.qza"
+      --o-clean-sequences "$CULLED_SEQS"
 
     qiime rescript filter-seqs-length \
-      --i-sequences "$WORKDIR/taxonomy/ncbi-${marker}-seqs-culled.qza" \
+      --i-sequences "$CULLED_SEQS" \
       --p-global-min 80 \
       --p-global-max 2000 \
       --o-filtered-seqs "$REF_SEQS" \
-      --o-discarded-seqs "$WORKDIR/taxonomy/ncbi-${marker}-seqs-discarded.qza"
+      --o-discarded-seqs "$DISCARDED_SEQS"
 
     cp "$RAW_TAX" "$REF_TAX"
-
-    if [[ ! -s "$REF_SEQS" ]]; then
-      echo "ATTENTION : la requête NCBI pour ${marker} n'a retourné aucune séquence exploitable. Fournissez ref-seqs_${marker}.qza / ref-taxonomy_${marker}.qza manuellement." >&2
-    fi
   fi
 
   if [[ -f "$REF_SEQS" && -f "$REF_TAX" ]]; then
@@ -304,7 +301,6 @@ done
 
 #####################################################
 # 6. Inspection des contrôles AVANT nettoyage
-#    -> barplot taxonomique restreint aux échantillons contrôles
 #####################################################
 for marker in "${MARKERS[@]}"; do
   taxo="$WORKDIR/taxonomy/taxonomy_${marker}.qza"
@@ -321,14 +317,10 @@ for marker in "${MARKERS[@]}"; do
     --i-taxonomy "$taxo" \
     --m-metadata-file "$meta" \
     --o-visualization "$WORKDIR/decontam/controls_barplot_${marker}.qzv"
-
-  echo "-> Ouvrez controls_barplot_${marker}.qzv (qiime tools view) pour voir ce qu'il y a dans les NTC/Neg de $marker"
 done
 
 #####################################################
-# 7. Décontamination (decontam, méthode "prevalence" via metadata)
-#    -> identifie les ASV significativement associées aux contrôles
-#    -> les retire des échantillons réels
+# 7. Décontamination (decontam, méthode prevalence)
 #####################################################
 for marker in "${MARKERS[@]}"; do
   table="$WORKDIR/dada2/table_${marker}.qza"
@@ -349,7 +341,6 @@ for marker in "${MARKERS[@]}"; do
     --p-threshold 0.1 \
     --o-visualization "$WORKDIR/decontam/decontam-scoreviz_${marker}.qzv"
 
-  # Retrait des features identifiées comme contaminantes (score <= 0.1)
   qiime quality-control decontam-remove \
     --i-decontam-scores "$WORKDIR/decontam/decontam-scores_${marker}.qza" \
     --i-table "$table" \
@@ -357,16 +348,14 @@ for marker in "${MARKERS[@]}"; do
     --p-threshold 0.1 \
     --o-filtered-table "$WORKDIR/decontam/table_${marker}_decontam.qza" \
     --o-filtered-rep-seqs "$WORKDIR/decontam/rep-seqs_${marker}_decontam.qza"
-
-  echo "-> Inspectez decontam-scoreviz_${marker}.qzv avant de valider le seuil 0.1 (ajustable)"
 done
 
 #####################################################
 # 8. Retrait des échantillons contrôles eux-mêmes de la table finale
-#    (une fois les contaminants ASV retirés des vrais échantillons)
 #####################################################
 for marker in "${MARKERS[@]}"; do
   table_dc="$WORKDIR/decontam/table_${marker}_decontam.qza"
+  repseqs_dc="$WORKDIR/decontam/rep-seqs_${marker}_decontam.qza"
   [ -f "$table_dc" ] || continue
 
   qiime feature-table filter-samples \
@@ -376,7 +365,7 @@ for marker in "${MARKERS[@]}"; do
     --o-filtered-table "$WORKDIR/decontam/table_${marker}_final.qza"
 
   qiime feature-table filter-seqs \
-    --i-data "$WORKDIR/decontam/rep-seqs_${marker}_decontam.qza" \
+    --i-data "$repseqs_dc" \
     --i-table "$WORKDIR/decontam/table_${marker}_final.qza" \
     --o-filtered-data "$WORKDIR/decontam/rep-seqs_${marker}_final.qza"
 done
@@ -397,7 +386,7 @@ for marker in "${MARKERS[@]}"; do
 
   mkdir -p "$WORKDIR/exports/${marker}_final"
   qiime tools export --input-path "$table_final" --output-path "$WORKDIR/exports/${marker}_final"
-  qiime tools export --input-path "$taxo"       --output-path "$WORKDIR/exports/${marker}_final"
+  qiime tools export --input-path "$taxo" --output-path "$WORKDIR/exports/${marker}_final"
 
   biom add-metadata \
     -i "$WORKDIR/exports/${marker}_final/feature-table.biom" \
@@ -411,7 +400,6 @@ for marker in "${MARKERS[@]}"; do
     -o "$WORKDIR/exports/${marker}_final/ASV_table_${marker}_taxonomy.tsv" \
     --to-tsv --header-key taxonomy
 
-  echo "=== Marqueur ${marker} : table ASV finale + taxonomie exportées dans exports/${marker}_final/ ==="
 done
 
 echo "Pipeline terminé."
