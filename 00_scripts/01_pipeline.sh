@@ -55,7 +55,7 @@ ILLUMINA_REV="AGATCGGAAGAGCGTCGTGTAGGGAAAGAGTGT"
 
 #####################################################
 # 1. Construction des manifests (version précise GSA)
-#    On ne prend QUE les dossiers explicitement attendus
+# On ne prend QUE les dossiers explicitement attendus
 #####################################################
 GSA_DIRS=(
   1A-m1 2A-m1 3A-m1 4A-m1 6A-m1 NTC-A-m1
@@ -95,6 +95,10 @@ for marker in "${MARKERS[@]}"; do
 
     printf "%s\t%s\t%s\n" "$sampledir" "$r1" "$r2" >> "$manifest"
   done
+
+  echo "Manifest ${marker} : $manifest"
+  column -t -s $'\t' "$manifest" | head
+  echo
 done
 
 #####################################################
@@ -103,25 +107,21 @@ done
 meta="$WORKDIR/metadata/sample-metadata.tsv"
 printf "sample-id\tsample\treplicate\tmarker\tsample-or-control\n" > "$meta"
 
-
 for sampledir in "${GSA_DIRS[@]}"; do
-  [[ "$sampledir" == *-"$marker" ]] || continue
-  d="$BASEDIR/$sampledir"
+  # Découper le nom du dossier GSA : ex. "1A-m3"
+  sample="${sampledir%%-*}"      # 1A
+  marker="${sampledir##*-}"      # m3
+  replicate="${sample: -1}"      # A
+  core="${sample::-1}"           # 1
+  soc="sample"
 
-  if [[ ! -d "$d" ]]; then
-    echo "ATTENTION: dossier absent: $d" >&2
-    continue
-  fi
+  case "$sampledir" in
+    NTC-*|Neg-*)
+      soc="control"
+      ;;
+  esac
 
-  r1=$(find "$d" -maxdepth 1 -type f -iname "*_R1*.fastq.gz" | sort | head -n1)
-  r2=$(find "$d" -maxdepth 1 -type f -iname "*_R2*.fastq.gz" | sort | head -n1)
-
-  if [[ -z "$r1" || -z "$r2" ]]; then
-    echo "ATTENTION: fastq manquants dans $d" >&2
-    continue
-  fi
-
-  printf "%s\t%s\t%s\n" "$sampledir" "$r1" "$r2" >> "$manifest"
+  printf "%s\t%s\t%s\t%s\t%s\n" "$sampledir" "$core" "$replicate" "$marker" "$soc" >> "$meta"
 done
 
 echo "Metadata écrite : $meta"
