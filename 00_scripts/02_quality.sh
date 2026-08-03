@@ -22,7 +22,7 @@ conda activate metagenomics
 # d'inclure d'autres projets présents dans le même répertoire.
 
 BASEDIR="/storage/groups/gdec/shared_paleo/filtermask"
-WORKDIR="/home/plstenge/Grand_Saint_Antoine_qc"
+WORKDIR="/home/plstenge/Grand_Saint_Antoine/02_qc"
 THREADS="${THREADS:-16}"
 
 mkdir -p "$WORKDIR"/{lists,fastqc,multiqc,logs}
