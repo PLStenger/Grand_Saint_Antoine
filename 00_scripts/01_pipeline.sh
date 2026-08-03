@@ -51,8 +51,7 @@ MARKERS=(m1 m2 m3)
 # 1. Construction des manifests (un par marqueur)
 #####################################################
 # Structure attendue : $BASEDIR/<ID>-<Rep>-<marker>/<sampleid>_R1.fastq.gz
-# ex: $BASEDIR/1A-m1/1a-m1_R1.fastq.gz  (les noms internes varient un peu,
-# ex ntc6-m7 -> on cherche donc dynamiquement les fastq dans chaque dossier)
+# ex: $BASEDIR/1A-m1/1a-m1_R1.fastq.gz  
 
 for marker in "${MARKERS[@]}"; do
   manifest="$WORKDIR/manifests/manifest_${marker}.tsv"
@@ -171,17 +170,29 @@ for marker in "${MARKERS[@]}"; do
 done
 
 #####################################################
-# 5. Taxonomie
-#    - V4V5 (m3) : classificateur SILVA (à télécharger au préalable, ex.
-#      silva-138-99-nb-classifier.qza dans $WORKDIR/taxonomy/)
-#    - pla / caf (m1, m2) : marqueurs spécifiques Yersinia, pas de base
-#      SILVA adaptée -> utiliser classify-consensus-blast/vsearch contre une
-#      base de référence dédiée (ex. séquences pla/caf1 de Y. pestis/
-#      Enterobacteriaceae) que vous devez fournir.
+# 5. Taxonomie (avec téléchargement/construction automatique des bases
+#    si elles sont absentes)
+#    - V4V5 (m3) : classificateur SILVA pré-entraîné, téléchargé depuis
+#      data.qiime2.org s'il n'existe pas déjà localement.
+#    - pla / caf (m1, m2) : pas de base publique pré-entraînée ->
+#      construction automatique d'une base de référence via
+#      `qiime rescript get-ncbi-data` (NCBI) si les fichiers n'existent pas.
 #####################################################
 
-# --- V4V5 : classification SILVA ---
+SILVA_URL="https://data.qiime2.org/2024.5/common/silva-138-99-nb-classifier.qza"
 CLASSIFIER="$WORKDIR/taxonomy/silva-138-99-nb-classifier.qza"
+
+# --- V4V5 : téléchargement auto du classificateur SILVA si absent ---
+if [[ ! -f "$CLASSIFIER" ]]; then
+  echo "Classificateur SILVA absent -> téléchargement en cours..."
+  wget -c -O "$CLASSIFIER" "$SILVA_URL"
+  # Vérification basique que le fichier est bien un artefact QIIME2 (zip) et pas une page d'erreur HTML
+  if ! unzip -l "$CLASSIFIER" >/dev/null 2>&1; then
+    echo "ERREUR : le téléchargement du classificateur SILVA a échoué (fichier invalide)." >&2
+    rm -f "$CLASSIFIER"
+  fi
+fi
+
 if [[ -f "$CLASSIFIER" ]]; then
   qiime feature-classifier classify-sklearn \
     --i-classifier "$CLASSIFIER" \
@@ -189,13 +200,58 @@ if [[ -f "$CLASSIFIER" ]]; then
     --p-n-jobs "$THREADS" \
     --o-classification "$WORKDIR/taxonomy/taxonomy_m3.qza"
 else
-  echo "ATTENTION : classificateur SILVA absent, téléchargez-le avant l'étape taxonomie V4V5"
+  echo "ATTENTION : classification V4V5 impossible, classificateur SILVA introuvable." >&2
 fi
 
-# --- pla / caf : classification via base de référence dédiée (à adapter) ---
+# --- pla / caf : construction automatique d'une base de référence NCBI ---
+# Requêtes Entrez ciblées sur les gènes plasminogen activator (pla) et
+# antigène F1 capsulaire (caf1) de Yersinia pestis / Enterobacteriaceae.
+# NB : nécessite une connexion internet et le plugin RESCRIPt
+# (conda install -c bioconda -c conda-forge rescript, ou déjà inclus dans
+# certains environnements qiime2-amplicon).
+
+declare -A NCBI_QUERY
+NCBI_QUERY[m1]='(Yersinia pestis[Organism] AND pla[Gene]) AND (plasminogen activator[Title] OR pla[Title])'
+NCBI_QUERY[m2]='(Yersinia pestis[Organism] OR Enterobacteriaceae[Organism]) AND (caf1[Gene] OR "capsular antigen F1"[Title] OR caf1[Title])'
+
 for marker in m1 m2; do
-  REF_SEQS="$WORKDIR/taxonomy/ref-seqs_${marker}.qza"      # FeatureData[Sequence]
-  REF_TAX="$WORKDIR/taxonomy/ref-taxonomy_${marker}.qza"   # FeatureData[Taxonomy]
+  REF_SEQS="$WORKDIR/taxonomy/ref-seqs_${marker}.qza"
+  REF_TAX="$WORKDIR/taxonomy/ref-taxonomy_${marker}.qza"
+
+  if [[ ! -f "$REF_SEQS" || ! -f "$REF_TAX" ]]; then
+    echo "Base de référence ${marker} absente -> construction automatique depuis NCBI..."
+    RAW_SEQS="$WORKDIR/taxonomy/ncbi-${marker}-seqs-raw.qza"
+    RAW_TAX="$WORKDIR/taxonomy/ncbi-${marker}-tax-raw.qza"
+
+    qiime rescript get-ncbi-data \
+      --p-query "${NCBI_QUERY[$marker]}" \
+      --p-n-jobs 3 \
+      --o-sequences "$RAW_SEQS" \
+      --o-taxonomy "$RAW_TAX" \
+      --verbose
+
+    # Nettoyage minimal : retrait des séquences dégénérées/homopolymères
+    # et filtrage de longueur (ajuster selon la taille attendue des amplicons)
+    qiime rescript cull-seqs \
+      --i-sequences "$RAW_SEQS" \
+      --p-num-degenerates 5 \
+      --p-homopolymer-length 12 \
+      --o-clean-sequences "$WORKDIR/taxonomy/ncbi-${marker}-seqs-culled.qza"
+
+    qiime rescript filter-seqs-length \
+      --i-sequences "$WORKDIR/taxonomy/ncbi-${marker}-seqs-culled.qza" \
+      --p-global-min 80 \
+      --p-global-max 2000 \
+      --o-filtered-seqs "$REF_SEQS" \
+      --o-discarded-seqs "$WORKDIR/taxonomy/ncbi-${marker}-seqs-discarded.qza"
+
+    cp "$RAW_TAX" "$REF_TAX"
+
+    if [[ ! -s "$REF_SEQS" ]]; then
+      echo "ATTENTION : la requête NCBI pour ${marker} n'a retourné aucune séquence exploitable. Fournissez ref-seqs_${marker}.qza / ref-taxonomy_${marker}.qza manuellement." >&2
+    fi
+  fi
+
   if [[ -f "$REF_SEQS" && -f "$REF_TAX" ]]; then
     qiime feature-classifier classify-consensus-vsearch \
       --i-query "$WORKDIR/dada2/rep-seqs_${marker}.qza" \
@@ -205,7 +261,7 @@ for marker in m1 m2; do
       --o-classification "$WORKDIR/taxonomy/taxonomy_${marker}.qza" \
       --o-search-results "$WORKDIR/taxonomy/search_${marker}.qza"
   else
-    echo "ATTENTION : fournissez ref-seqs_${marker}.qza + ref-taxonomy_${marker}.qza (séquences pla/caf1 annotées) pour classer $marker"
+    echo "ATTENTION : classification ${marker} impossible (base de référence indisponible)." >&2
   fi
 done
 
@@ -289,7 +345,7 @@ for marker in "${MARKERS[@]}"; do
 done
 
 #####################################################
-# 9. Table taxonomique finale + exports (pas de raréfaction, comme demandé)
+# 9. Table taxonomique finale + exports (pas de raréfaction)
 #####################################################
 for marker in "${MARKERS[@]}"; do
   table_final="$WORKDIR/decontam/table_${marker}_final.qza"
