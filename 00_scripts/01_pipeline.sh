@@ -107,22 +107,25 @@ done
 meta="$WORKDIR/metadata/sample-metadata.tsv"
 printf "sample-id\tsample\treplicate\tmarker\tsample-or-control\n" > "$meta"
 
-for marker in "${MARKERS[@]}"; do
-  tail -n +2 "$WORKDIR/manifests/manifest_${marker}.tsv" | cut -f1 | while read -r sid; do
-    if [[ "$sid" =~ ^(NTC|Neg) ]]; then
-      status="control"
-    else
-      status="sample"
-    fi
 
-    samplenum=$(echo "$sid" | grep -oP '^[0-9]+' || true)
-    [[ -n "${samplenum:-}" ]] || samplenum="NA"
+for sampledir in "${GSA_DIRS[@]}"; do
+  [[ "$sampledir" == *-"$marker" ]] || continue
+  d="$BASEDIR/$sampledir"
 
-    repl=$(echo "$sid" | grep -oP '(?<=[0-9])[A-C]|(?<=NTC-)[A-C]' || true)
-    [[ -n "${repl:-}" ]] || repl="NA"
+  if [[ ! -d "$d" ]]; then
+    echo "ATTENTION: dossier absent: $d" >&2
+    continue
+  fi
 
-    printf "%s\t%s\t%s\t%s\t%s\n" "$sid" "$samplenum" "$repl" "$marker" "$status" >> "$meta"
-  done
+  r1=$(find "$d" -maxdepth 1 -type f -iname "*_R1*.fastq.gz" | sort | head -n1)
+  r2=$(find "$d" -maxdepth 1 -type f -iname "*_R2*.fastq.gz" | sort | head -n1)
+
+  if [[ -z "$r1" || -z "$r2" ]]; then
+    echo "ATTENTION: fastq manquants dans $d" >&2
+    continue
+  fi
+
+  printf "%s\t%s\t%s\n" "$sampledir" "$r1" "$r2" >> "$manifest"
 done
 
 echo "Metadata écrite : $meta"
