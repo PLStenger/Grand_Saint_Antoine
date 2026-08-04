@@ -182,14 +182,26 @@ done
 #####################################################
 # 4. DADA2 (denoise-paired) par marqueur
 #####################################################
+
 declare -A TRUNC_F
 declare -A TRUNC_R
+declare -A MAXEE_F
+declare -A MAXEE_R
+
 TRUNC_F[m1]=0
 TRUNC_R[m1]=0
+MAXEE_F[m1]=5.0
+MAXEE_R[m1]=5.0
+
 TRUNC_F[m2]=0
 TRUNC_R[m2]=0
-TRUNC_F[m3]=280
-TRUNC_R[m3]=220
+MAXEE_F[m2]=5.0
+MAXEE_R[m2]=5.0
+
+TRUNC_F[m3]=220   # V4V5 un peu plus court
+TRUNC_R[m3]=180
+MAXEE_F[m3]=5.0
+MAXEE_R[m3]=5.0
 
 for marker in "${MARKERS[@]}"; do
   trimmed="$WORKDIR/trimmed/trimmed_${marker}.qza"
@@ -201,16 +213,18 @@ for marker in "${MARKERS[@]}"; do
   [[ -f "$trimmed" ]] || { echo "ERREUR: fichier absent $trimmed" >&2; continue; }
 
   qiime dada2 denoise-paired \
-    --i-demultiplexed-seqs "$trimmed" \
-    --p-trunc-len-f "${TRUNC_F[$marker]}" \
-    --p-trunc-len-r "${TRUNC_R[$marker]}" \
-    --p-n-threads "$THREADS" \
-    --o-table "$table" \
-    --o-representative-sequences "$repseqs" \
-    --o-denoising-stats "$stats" \
-    --o-base-transition-stats "$bt_stats" \
-    --verbose
-
+  --i-demultiplexed-seqs "$trimmed" \
+  --p-trunc-len-f "${TRUNC_F[$marker]}" \
+  --p-trunc-len-r "${TRUNC_R[$marker]}" \
+  --p-max-ee-f "${MAXEE_F[$marker]}" \
+  --p-max-ee-r "${MAXEE_R[$marker]}" \
+  --p-n-threads "$THREADS" \
+  --o-table "$table" \
+  --o-representative-sequences "$repseqs" \
+  --o-denoising-stats "$stats" \
+  --o-base-transition-stats "$bt_stats" \
+  --verbose
+  
   # Résumés de la table
   qiime feature-table summarize \
     --i-table "$table" \
@@ -230,26 +244,16 @@ done
 #    - V4V5 (m3) : classificateur SILVA téléchargé si absent
 #    - pla / caf (m1, m2) : base NCBI construite si absente
 #####################################################
-SILVA_URL="https://data.qiime2.org/2024.5/common/silva-138-99-nb-classifier.qza"
-CLASSIFIER="$WORKDIR/taxonomy/silva-138-99-nb-classifier.qza"
+CLASSIFIER="$WORKDIR/taxonomy/silva-138.2-ssu-nr99-515f-926r-classifier.qza"
 
 if [[ ! -f "$CLASSIFIER" ]]; then
-  echo "Classificateur SILVA absent -> téléchargement en cours..."
-  wget -c -O "$CLASSIFIER" "$SILVA_URL"
-  if ! unzip -l "$CLASSIFIER" >/dev/null 2>&1; then
-    echo "ERREUR : le téléchargement du classificateur SILVA a échoué (fichier invalide)." >&2
-    rm -f "$CLASSIFIER"
-  fi
-fi
-
-if [[ -f "$CLASSIFIER" ]]; then
+  echo "ERREUR : classificateur SILVA 515F-926R absent." >&2
+else
   qiime feature-classifier classify-sklearn \
     --i-classifier "$CLASSIFIER" \
     --i-reads "$WORKDIR/dada2/rep-seqs_m3.qza" \
     --p-n-jobs "$THREADS" \
     --o-classification "$WORKDIR/taxonomy/taxonomy_m3.qza"
-else
-  echo "ATTENTION : classification V4V5 impossible, classificateur SILVA introuvable." >&2
 fi
 
 declare -A NCBI_QUERY
