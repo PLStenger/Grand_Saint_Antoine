@@ -17,15 +17,28 @@ source ~/.bashrc
 conda activate rachis-qiime2-2026.7
 
 #############################################################################
-# Pipeline QIIME2 - reprise / finalisation
+# Pipeline QIIME2 - reprise v3 / finalisation
 # GSA - pla (m1), caf1 (m2), V4V5 (m3)
+#
+# Corrections apportees suite au run precedent (01_pipeline_resume.out) :
+#   1) m2 DADA2 : "No features remain after denoising" meme avec maxEE=8.
+#      -> passage en pooling pseudo + chimera_method none pour recuperer
+#         des ASV, puis on retente avec chimera consensus en secours.
+#   2) m3 taxonomie : le classificateur SILVA est en realite dans
+#      /home/plstenge/Grand_Saint_Antoine/taxonomy/ et non dans
+#      02_filtermask_pipeline/taxonomy/ -> chemin corrige.
+#   3) m1 100% Unassigned : classify-consensus-vsearch avec les seuils
+#      par defaut (perc-identity 0.97, min-consensus 0.51) est trop strict
+#      pour la base pla reduite -> seuils relaches + diagnostic sur
+#      search_m1.qza (nombre de hits bruts) avant de conclure.
 #############################################################################
 
 ########################
-# 0. Paramètres généraux
+# 0. Parametres generaux
 ########################
 BASEDIR="/storage/groups/gdec/shared_paleo/E1739/filtermask"
 WORKDIR="/home/plstenge/Grand_Saint_Antoine/02_filtermask_pipeline"
+TAXODIR_GLOBAL="/home/plstenge/Grand_Saint_Antoine/taxonomy"
 THREADS=16
 
 mkdir -p "$WORKDIR"/{manifests,imported,trimmed,dada2,taxonomy,decontam,exports,metadata,logs,tmp}
@@ -34,9 +47,9 @@ cd "$WORKDIR"
 META="$WORKDIR/metadata/sample-metadata.tsv"
 
 ########################
-# 0bis. Vérifs minimales
+# 0bis. Verifs minimales
 ########################
-echo "=== Vérification des fichiers existants ==="
+echo "=== Verification des fichiers existants ==="
 
 for f in \
   "$WORKDIR/trimmed/trimmed_m1.qza" \
@@ -53,83 +66,39 @@ done
 [[ -f "$META" ]] || { echo "ERREUR: metadata absente: $META" >&2; exit 1; }
 
 ########################
-# 1. Étapes déjà faites : on ne relance pas
+# 1. Etapes deja faites : on NE relance PAS
 ########################
-# On garde la trace de ce qui a déjà été exécuté, mais on ne relance pas.
+# Tout ce bloc est laisse en commentaire pour trace, ne pas decommenter.
 #
-# # Construction des manifests
-# # Import QIIME2
-# # Cutadapt sur m1/m2/m3
-# # Construction des bases NCBI pour m1/m2
-# #
-# # Fichiers déjà présents observés :
-# # trimmed/trimmed_m1.qza
-# # trimmed/trimmed_m2.qza
-# # trimmed/trimmed_m3.qza
-# # taxonomy/ref-seqs_m1.qza
-# # taxonomy/ref-taxonomy_m1.qza
-# # taxonomy/ref-seqs_m2.qza
-# # taxonomy/ref-taxonomy_m2.qza
-# # taxonomy/taxonomy_m1.qza
-# # taxonomy/search_m1.qza
-# # taxonomy/search_m2.qza
-# #
-# # Donc on reprend à partir du débruitage / classification / export.
+# # Construction des manifests (m1/m2/m3)
+# # Import QIIME2 (m1/m2/m3)
+# # Cutadapt sur m1/m2/m3            -> trimmed/trimmed_m{1,2,3}.qza
+# # Construction des bases NCBI m1/m2 -> taxonomy/ref-seqs_m{1,2}.qza,
+# #                                      taxonomy/ref-taxonomy_m{1,2}.qza
+# # DADA2 m1 (deja OK, ne pas retoucher) -> dada2/table_m1.qza, rep-seqs_m1.qza
+# # DADA2 m3 single-end (deja OK)        -> dada2/table_m3.qza, rep-seqs_m3.qza
+# # Taxonomie m1 (classify-consensus-vsearch, deja fait mais tout Unassigned,
+# #               on va relancer avec seuils relaches, cf etape 6)
+#
+# Donc dans ce script v3 on ne relance QUE :
+#   - m2 DADA2 (avec strategie alternative)
+#   - m3 taxonomie (chemin classificateur corrige)
+#   - m1 taxonomie (seuils relaches + diagnostic)
+#   - decontam + exports pour tout ce qui est disponible
 
 ########################
-# 2. Paramètres DADA2
+# 2. m1 - deja present, on ne relance pas DADA2
 ########################
-
-# m1 : déjà OK, on ne relance pas
-# m2 : rerun paired-end avec paramètres relâchés
-# m3 : rerun en single-end sur R1 seulement
-
-M2_TRUNC_F=0
-M2_TRUNC_R=0
-M2_MAXEE_F=8.0
-M2_MAXEE_R=8.0
-M2_TRIMLEFT_F=0
-M2_TRIMLEFT_R=0
-
-# m3 : single-end sur forward uniquement
-M3_TRUNC_LEN=220
-M3_MAXEE=8.0
-M3_TRIMLEFT=0
-
-########################
-# 3. m1 - résumés si besoin
-########################
-echo "=== m1 : vérification des artefacts existants ==="
-
-if [[ -f "$WORKDIR/dada2/table_m1.qza" && -f "$WORKDIR/dada2/rep-seqs_m1.qza" ]]; then
-  echo "m1 DADA2 déjà présent."
-else
-  echo "ATTENTION: m1 n'a pas de table/rep-seqs, ce n'était pas attendu." >&2
-fi
-
-if [[ -f "$WORKDIR/dada2/table_m1.qza" ]]; then
-  qiime feature-table summarize \
-    --i-table "$WORKDIR/dada2/table_m1.qza" \
-    --m-metadata-file "$META" \
-    --o-feature-frequencies "$WORKDIR/dada2/feature-freq_m1.qza" \
-    --o-sample-frequencies "$WORKDIR/dada2/sample-freq_m1.qza" \
-    --o-summary "$WORKDIR/dada2/table_m1.qzv" \
-    || true
-fi
-
-if [[ -f "$WORKDIR/dada2/rep-seqs_m1.qza" ]]; then
-  qiime feature-table tabulate-seqs \
-    --i-data "$WORKDIR/dada2/rep-seqs_m1.qza" \
-    --o-visualization "$WORKDIR/dada2/rep-seqs_m1.qzv" \
-    || true
+echo "=== m1 : DADA2 deja present, aucune action ==="
+if [[ ! -f "$WORKDIR/dada2/table_m1.qza" || ! -f "$WORKDIR/dada2/rep-seqs_m1.qza" ]]; then
+  echo "ERREUR: m1 devrait deja avoir table/rep-seqs, verifier l'etat du dossier." >&2
 fi
 
 ########################
-# 4. m2 - rerun DADA2 paired-end
+# 3. m2 - rerun DADA2 avec strategie alternative
 ########################
-echo "=== m2 : rerun DADA2 paired-end ==="
+echo "=== m2 : rerun DADA2 paired-end (pooling pseudo, sans puis avec chimere) ==="
 
-# On sauvegarde les anciens résultats s'ils existent
 for f in \
   "$WORKDIR/dada2/table_m2.qza" \
   "$WORKDIR/dada2/rep-seqs_m2.qza" \
@@ -138,9 +107,20 @@ for f in \
   "$WORKDIR/dada2/table_m2.qzv" \
   "$WORKDIR/dada2/rep-seqs_m2.qzv"
 do
-  [[ -f "$f" ]] && mv "$f" "${f}.bak_$(date +%Y%m%d_%H%M%S)" || true
+  [[ -f "$f" ]] && mv "$f" "${f}.bak_$(date +%Y%m%d_%H%M%S)"
 done
 
+M2_TRUNC_F=0
+M2_TRUNC_R=0
+M2_MAXEE_F=10.0
+M2_MAXEE_R=10.0
+M2_TRIMLEFT_F=0
+M2_TRIMLEFT_R=0
+
+# Tentative 1 : pooling pseudo, sans detection de chimeres
+# (le pooling "independent" par echantillon est trop strict quand
+#  chaque echantillon a tres peu de reads ; "pseudo" partage l'info
+#  entre echantillons pour stabiliser l'apprentissage des erreurs)
 qiime dada2 denoise-paired \
   --i-demultiplexed-seqs "$WORKDIR/trimmed/trimmed_m2.qza" \
   --p-trunc-len-f "$M2_TRUNC_F" \
@@ -149,6 +129,8 @@ qiime dada2 denoise-paired \
   --p-trim-left-r "$M2_TRIMLEFT_R" \
   --p-max-ee-f "$M2_MAXEE_F" \
   --p-max-ee-r "$M2_MAXEE_R" \
+  --p-pooling-method pseudo \
+  --p-chimera-method none \
   --p-n-threads "$THREADS" \
   --p-n-reads-learn 100000 \
   --o-table "$WORKDIR/dada2/table_m2.qza" \
@@ -156,7 +138,30 @@ qiime dada2 denoise-paired \
   --o-denoising-stats "$WORKDIR/dada2/stats_m2.qza" \
   --o-base-transition-stats "$WORKDIR/dada2/base-transition-stats_m2.qza" \
   --verbose \
-  2>&1 | tee "$WORKDIR/logs/dada2_m2_rerun.log"
+  2>&1 | tee "$WORKDIR/logs/dada2_m2_pseudo_nochimera.log"
+
+if [[ ! -f "$WORKDIR/dada2/table_m2.qza" ]]; then
+  echo "Tentative 1 (pseudo, sans chimere) a echoue, essai 2 : pooling pseudo + chimere consensus" >&2
+
+  qiime dada2 denoise-paired \
+    --i-demultiplexed-seqs "$WORKDIR/trimmed/trimmed_m2.qza" \
+    --p-trunc-len-f "$M2_TRUNC_F" \
+    --p-trunc-len-r "$M2_TRUNC_R" \
+    --p-trim-left-f "$M2_TRIMLEFT_F" \
+    --p-trim-left-r "$M2_TRIMLEFT_R" \
+    --p-max-ee-f "$M2_MAXEE_F" \
+    --p-max-ee-r "$M2_MAXEE_R" \
+    --p-pooling-method pseudo \
+    --p-chimera-method consensus \
+    --p-n-threads "$THREADS" \
+    --p-n-reads-learn 100000 \
+    --o-table "$WORKDIR/dada2/table_m2.qza" \
+    --o-representative-sequences "$WORKDIR/dada2/rep-seqs_m2.qza" \
+    --o-denoising-stats "$WORKDIR/dada2/stats_m2.qza" \
+    --o-base-transition-stats "$WORKDIR/dada2/base-transition-stats_m2.qza" \
+    --verbose \
+    2>&1 | tee "$WORKDIR/logs/dada2_m2_pseudo_consensus.log"
+fi
 
 if [[ -f "$WORKDIR/dada2/table_m2.qza" ]]; then
   qiime feature-table summarize \
@@ -169,117 +174,121 @@ if [[ -f "$WORKDIR/dada2/table_m2.qza" ]]; then
   qiime feature-table tabulate-seqs \
     --i-data "$WORKDIR/dada2/rep-seqs_m2.qza" \
     --o-visualization "$WORKDIR/dada2/rep-seqs_m2.qzv"
+
+  echo "m2 : DADA2 a produit une table (voir logs pour savoir si sans ou avec detection de chimeres)."
 else
-  echo "ERREUR: m2 DADA2 n'a pas produit de table." >&2
+  echo "ERREUR: m2 DADA2 n'a produit aucune table meme avec pooling pseudo. Les donnees m2 sont probablement inexploitables en l'etat (trop peu de reads / trop de bruit)." >&2
 fi
 
 ########################
-# 5. m3 - extraction forward et DADA2 single-end
+# 4. m3 - deja present, on ne relance pas DADA2
 ########################
-echo "=== m3 : extraction forward puis DADA2 single-end ==="
-
-# On crée un manifest single-end à partir du manifest m3 paired existant
-M3_MANIFEST_PAIRED="$WORKDIR/manifests/manifest_m3.tsv"
-M3_MANIFEST_FWD="$WORKDIR/manifests/manifest_m3_forward.tsv"
-
-[[ -f "$M3_MANIFEST_PAIRED" ]] || { echo "ERREUR: manifest m3 absent." >&2; exit 1; }
-
-printf "sample-id\tabsolute-filepath\n" > "$M3_MANIFEST_FWD"
-tail -n +2 "$M3_MANIFEST_PAIRED" | awk -F '\t' '{print $1 "\t" $2}' >> "$M3_MANIFEST_FWD"
-
-# Sauvegarde si déjà présent
-[[ -f "$WORKDIR/imported/demux_m3_forward.qza" ]] && mv "$WORKDIR/imported/demux_m3_forward.qza" "$WORKDIR/imported/demux_m3_forward.qza.bak_$(date +%Y%m%d_%H%M%S)" || true
-
-qiime tools import \
-  --type 'SampleData[SequencesWithQuality]' \
-  --input-path "$M3_MANIFEST_FWD" \
-  --input-format SingleEndFastqManifestPhred33V2 \
-  --output-path "$WORKDIR/imported/demux_m3_forward.qza"
-
-# Sauvegarde anciens résultats m3 si présents
-for f in \
-  "$WORKDIR/dada2/table_m3.qza" \
-  "$WORKDIR/dada2/rep-seqs_m3.qza" \
-  "$WORKDIR/dada2/stats_m3.qza" \
-  "$WORKDIR/dada2/base-transition-stats_m3.qza" \
-  "$WORKDIR/dada2/table_m3.qzv" \
-  "$WORKDIR/dada2/rep-seqs_m3.qzv"
-do
-  [[ -f "$f" ]] && mv "$f" "${f}.bak_$(date +%Y%m%d_%H%M%S)" || true
-done
-
-qiime dada2 denoise-single \
-  --i-demultiplexed-seqs "$WORKDIR/imported/demux_m3_forward.qza" \
-  --p-trunc-len "$M3_TRUNC_LEN" \
-  --p-trim-left "$M3_TRIMLEFT" \
-  --p-max-ee "$M3_MAXEE" \
-  --p-n-threads "$THREADS" \
-  --p-n-reads-learn 100000 \
-  --o-table "$WORKDIR/dada2/table_m3.qza" \
-  --o-representative-sequences "$WORKDIR/dada2/rep-seqs_m3.qza" \
-  --o-denoising-stats "$WORKDIR/dada2/stats_m3.qza" \
-  --o-base-transition-stats "$WORKDIR/dada2/base-transition-stats_m3.qza" \
-  --verbose \
-  2>&1 | tee "$WORKDIR/logs/dada2_m3_single.log"
-
-if [[ -f "$WORKDIR/dada2/table_m3.qza" ]]; then
-  qiime feature-table summarize \
-    --i-table "$WORKDIR/dada2/table_m3.qza" \
-    --m-metadata-file "$META" \
-    --o-feature-frequencies "$WORKDIR/dada2/feature-freq_m3.qza" \
-    --o-sample-frequencies "$WORKDIR/dada2/sample-freq_m3.qza" \
-    --o-summary "$WORKDIR/dada2/table_m3.qzv"
-
-  qiime feature-table tabulate-seqs \
-    --i-data "$WORKDIR/dada2/rep-seqs_m3.qza" \
-    --o-visualization "$WORKDIR/dada2/rep-seqs_m3.qzv"
-else
-  echo "ERREUR: m3 DADA2 single n'a pas produit de table." >&2
+echo "=== m3 : DADA2 deja present, aucune action ==="
+if [[ ! -f "$WORKDIR/dada2/table_m3.qza" || ! -f "$WORKDIR/dada2/rep-seqs_m3.qza" ]]; then
+  echo "ERREUR: m3 devrait deja avoir table/rep-seqs, verifier l'etat du dossier." >&2
 fi
 
 ########################
-# 6. Taxonomie
+# 5. Taxonomie m1 : diagnostic puis seuils relaches
 ########################
-echo "=== Taxonomie ==="
+echo "=== m1 : diagnostic taxonomie (pourquoi tout Unassigned) ==="
 
-# m1 et m2 : bases déjà faites ; relancer classification si rep-seqs présents
-for marker in m1 m2; do
-  REP="$WORKDIR/dada2/rep-seqs_${marker}.qza"
-  REF_SEQS="$WORKDIR/taxonomy/ref-seqs_${marker}.qza"
-  REF_TAX="$WORKDIR/taxonomy/ref-taxonomy_${marker}.qza"
-  OUT_TAX="$WORKDIR/taxonomy/taxonomy_${marker}.qza"
-  OUT_SEARCH="$WORKDIR/taxonomy/search_${marker}.qza"
+REP_M1="$WORKDIR/dada2/rep-seqs_m1.qza"
+REF_SEQS_M1="$WORKDIR/taxonomy/ref-seqs_m1.qza"
+REF_TAX_M1="$WORKDIR/taxonomy/ref-taxonomy_m1.qza"
+SEARCH_M1_OLD="$WORKDIR/taxonomy/search_m1.qza"
 
-  if [[ -f "$REP" && -f "$REF_SEQS" && -f "$REF_TAX" ]]; then
-    qiime feature-classifier classify-consensus-vsearch \
-      --i-query "$REP" \
-      --i-reference-reads "$REF_SEQS" \
-      --i-reference-taxonomy "$REF_TAX" \
-      --p-threads "$THREADS" \
-      --o-classification "$OUT_TAX" \
-      --o-search-results "$OUT_SEARCH"
-  else
-    echo "ATTENTION: taxonomie ${marker} non relancée (fichiers manquants)." >&2
+if [[ -f "$SEARCH_M1_OLD" ]]; then
+  mkdir -p "$WORKDIR/tmp/search_m1_diag"
+  qiime tools export \
+    --input-path "$SEARCH_M1_OLD" \
+    --output-path "$WORKDIR/tmp/search_m1_diag" \
+    || true
+  if [[ -f "$WORKDIR/tmp/search_m1_diag/blast6.tsv" ]]; then
+    NB_HITS=$(wc -l < "$WORKDIR/tmp/search_m1_diag/blast6.tsv")
+    echo "Nombre de lignes dans search_m1 (hits BLAST6 bruts) : $NB_HITS"
+    echo "Si ce nombre est > 0, les sequences ont bien des hits, mais le seuil de consensus/identite les a rejetes."
+    echo "Si ce nombre est proche de 0, la base de reference pla est probablement trop restreinte ou mal formatee."
   fi
-done
+fi
 
-# m3 : nécessite un classificateur SILVA 515F-926R déjà entraîné / disponible
-M3_CLASSIFIER="$WORKDIR/taxonomy/silva-138.2-ssu-nr99-515f-926r-classifier.qza"
+echo "=== m1 : relance taxonomie avec seuils relaches ==="
 
-if [[ -f "$M3_CLASSIFIER" && -f "$WORKDIR/dada2/rep-seqs_m3.qza" ]]; then
+[[ -f "$WORKDIR/taxonomy/taxonomy_m1.qza" ]] && mv "$WORKDIR/taxonomy/taxonomy_m1.qza" "$WORKDIR/taxonomy/taxonomy_m1.qza.bak_$(date +%Y%m%d_%H%M%S)"
+[[ -f "$WORKDIR/taxonomy/search_m1.qza" ]] && mv "$WORKDIR/taxonomy/search_m1.qza" "$WORKDIR/taxonomy/search_m1.qza.bak_$(date +%Y%m%d_%H%M%S)"
+
+if [[ -f "$REP_M1" && -f "$REF_SEQS_M1" && -f "$REF_TAX_M1" ]]; then
+  qiime feature-classifier classify-consensus-vsearch \
+    --i-query "$REP_M1" \
+    --i-reference-reads "$REF_SEQS_M1" \
+    --i-reference-taxonomy "$REF_TAX_M1" \
+    --p-perc-identity 0.80 \
+    --p-min-consensus 0.51 \
+    --p-top-hits-only \
+    --p-maxaccepts 10 \
+    --p-threads "$THREADS" \
+    --o-classification "$WORKDIR/taxonomy/taxonomy_m1.qza" \
+    --o-search-results "$WORKDIR/taxonomy/search_m1.qza" \
+    --verbose \
+    2>&1 | tee "$WORKDIR/logs/taxonomy_m1_relaxed.log"
+else
+  echo "ATTENTION: taxonomie m1 non relancee (fichiers manquants)." >&2
+fi
+
+########################
+# 6. Taxonomie m2 (si DADA2 m2 a produit des rep-seqs)
+########################
+echo "=== m2 : taxonomie si rep-seqs disponibles ==="
+
+REP_M2="$WORKDIR/dada2/rep-seqs_m2.qza"
+REF_SEQS_M2="$WORKDIR/taxonomy/ref-seqs_m2.qza"
+REF_TAX_M2="$WORKDIR/taxonomy/ref-taxonomy_m2.qza"
+
+if [[ -f "$REP_M2" && -f "$REF_SEQS_M2" && -f "$REF_TAX_M2" ]]; then
+  qiime feature-classifier classify-consensus-vsearch \
+    --i-query "$REP_M2" \
+    --i-reference-reads "$REF_SEQS_M2" \
+    --i-reference-taxonomy "$REF_TAX_M2" \
+    --p-perc-identity 0.80 \
+    --p-min-consensus 0.51 \
+    --p-top-hits-only \
+    --p-maxaccepts 10 \
+    --p-threads "$THREADS" \
+    --o-classification "$WORKDIR/taxonomy/taxonomy_m2.qza" \
+    --o-search-results "$WORKDIR/taxonomy/search_m2.qza" \
+    --verbose \
+    2>&1 | tee "$WORKDIR/logs/taxonomy_m2_relaxed.log"
+else
+  echo "ATTENTION: taxonomie m2 non relancee (rep-seqs_m2 absent ou bases manquantes)." >&2
+fi
+
+########################
+# 7. Taxonomie m3 : chemin du classificateur SILVA CORRIGE
+########################
+echo "=== m3 : taxonomie avec chemin classificateur corrige ==="
+
+# Le classificateur est reellement ici, pas dans WORKDIR/taxonomy :
+M3_CLASSIFIER="$TAXODIR_GLOBAL/silva-138.2-ssu-nr99-515f-926r-classifier.qza"
+REP_M3="$WORKDIR/dada2/rep-seqs_m3.qza"
+
+if [[ -f "$M3_CLASSIFIER" && -f "$REP_M3" ]]; then
   qiime feature-classifier classify-sklearn \
     --i-classifier "$M3_CLASSIFIER" \
-    --i-reads "$WORKDIR/dada2/rep-seqs_m3.qza" \
+    --i-reads "$REP_M3" \
     --p-n-jobs "$THREADS" \
-    --o-classification "$WORKDIR/taxonomy/taxonomy_m3.qza"
+    --o-classification "$WORKDIR/taxonomy/taxonomy_m3.qza" \
+    --verbose \
+    2>&1 | tee "$WORKDIR/logs/taxonomy_m3_classify.log"
 else
-  echo "ATTENTION : taxonomie m3 non faite (classificateur SILVA 515F-926R absent ou rep-seqs_m3 absent)." >&2
+  echo "ATTENTION : taxonomie m3 non faite. Verifier :" >&2
+  echo "  - classificateur attendu : $M3_CLASSIFIER (existe: $([[ -f "$M3_CLASSIFIER" ]] && echo oui || echo NON))" >&2
+  echo "  - rep-seqs_m3 attendu    : $REP_M3 (existe: $([[ -f "$REP_M3" ]] && echo oui || echo NON))" >&2
 fi
 
 ########################
-# 7. Contrôles négatifs : inspection visuelle
+# 8. Controles negatifs : inspection visuelle
 ########################
-echo "=== Inspection des contrôles ==="
+echo "=== Inspection des controles ==="
 
 for marker in m1 m2 m3; do
   TABLE="$WORKDIR/dada2/table_${marker}.qza"
@@ -287,16 +296,15 @@ for marker in m1 m2 m3; do
   CTRL_TABLE="$WORKDIR/decontam/controls_table_${marker}.qza"
   CTRL_BAR="$WORKDIR/decontam/controls_barplot_${marker}.qzv"
 
-  [[ -f "$TABLE" ]] || continue
-  [[ -f "$TAXO" ]] || continue
+  [[ -f "$TABLE" ]] || { echo "m${marker#m} : pas de table, controle ignore." ; continue; }
+  [[ -f "$TAXO" ]] || { echo "$marker : pas de taxonomie, barplot controle ignore." ; continue; }
 
-  # On filtre directement les contrôles via metadata
   qiime feature-table filter-samples \
     --i-table "$TABLE" \
     --m-metadata-file "$META" \
     --p-where "[sample-or-control]='control' AND [marker]='${marker}'" \
     --o-filtered-table "$CTRL_TABLE" \
-    || true
+    2>&1 | tee -a "$WORKDIR/logs/controls_${marker}.log" || true
 
   if [[ -f "$CTRL_TABLE" ]]; then
     qiime taxa barplot \
@@ -304,12 +312,14 @@ for marker in m1 m2 m3; do
       --i-taxonomy "$TAXO" \
       --m-metadata-file "$META" \
       --o-visualization "$CTRL_BAR" \
-      || true
+      2>&1 | tee -a "$WORKDIR/logs/controls_${marker}.log" || true
+  else
+    echo "$marker : table de controles vide ou filtree a zero (verifier colonnes 'sample-or-control' et 'marker' dans $META)."
   fi
 done
 
 ########################
-# 8. Decontam : score seulement
+# 9. Decontam : identification
 ########################
 echo "=== Decontam : identification ==="
 
@@ -328,7 +338,7 @@ for marker in m1 m2 m3; do
     --p-prev-control-column sample-or-control \
     --p-prev-control-indicator control \
     --o-decontam-scores "$SCORE" \
-    || true
+    2>&1 | tee -a "$WORKDIR/logs/decontam_${marker}.log" || true
 
   if [[ -f "$SCORE" ]]; then
     if [[ -f "$REP" ]]; then
@@ -338,20 +348,22 @@ for marker in m1 m2 m3; do
         --i-rep-seqs "$REP" \
         --p-threshold 0.1 \
         --o-visualization "$SCORE_VIZ" \
-        || true
+        2>&1 | tee -a "$WORKDIR/logs/decontam_${marker}.log" || true
     else
       qiime quality-control decontam-score-viz \
         --i-decontam-scores "$SCORE" \
         --i-table "$TABLE" \
         --p-threshold 0.1 \
         --o-visualization "$SCORE_VIZ" \
-        || true
+        2>&1 | tee -a "$WORKDIR/logs/decontam_${marker}.log" || true
     fi
+  else
+    echo "$marker : decontam-identify n'a pas produit de score (pas assez de controles ou table trop petite)."
   fi
 done
 
 ########################
-# 9. Retrait des contaminants sans decontam-remove
+# 10. Retrait des contaminants (sans decontam-remove, absent du plugin)
 ########################
 echo "=== Filtrage des contaminants ==="
 
@@ -368,44 +380,48 @@ for marker in m1 m2 m3; do
 
   [[ -f "$TABLE" ]] || continue
   [[ -f "$REP" ]] || continue
-  [[ -f "$SCORE" ]] || continue
+  [[ -f "$SCORE" ]] || { echo "$marker : pas de score decontam, table finale = table brute filtree sur echantillons uniquement." ; }
 
-  qiime feature-table filter-features \
-    --i-table "$TABLE" \
-    --m-metadata-file "$SCORE" \
-    --p-where '[p] > 0.1 OR [p] IS NULL' \
-    --o-filtered-table "$TABLE_DC" \
-    || true
+  if [[ -f "$SCORE" ]]; then
+    qiime feature-table filter-features \
+      --i-table "$TABLE" \
+      --m-metadata-file "$SCORE" \
+      --p-where '[p] > 0.1 OR [p] IS NULL' \
+      --o-filtered-table "$TABLE_DC" \
+      2>&1 | tee -a "$WORKDIR/logs/filter_${marker}.log" || true
 
-  if [[ -f "$TABLE_DC" ]]; then
-    qiime feature-table filter-seqs \
-      --i-data "$REP" \
-      --i-table "$TABLE_DC" \
-      --o-filtered-data "$REP_DC" \
-      || true
+    if [[ -f "$TABLE_DC" ]]; then
+      qiime feature-table filter-seqs \
+        --i-data "$REP" \
+        --i-table "$TABLE_DC" \
+        --o-filtered-data "$REP_DC" \
+        2>&1 | tee -a "$WORKDIR/logs/filter_${marker}.log" || true
+    fi
+  else
+    cp "$TABLE" "$TABLE_DC"
+    cp "$REP" "$REP_DC"
   fi
 
-  # retrait des échantillons contrôles eux-mêmes dans la table finale
   if [[ -f "$TABLE_DC" ]]; then
     qiime feature-table filter-samples \
       --i-table "$TABLE_DC" \
       --m-metadata-file "$META" \
       --p-where "[sample-or-control]='sample' AND [marker]='${marker}'" \
       --o-filtered-table "$TABLE_FINAL" \
-      || true
+      2>&1 | tee -a "$WORKDIR/logs/filter_${marker}.log" || true
   fi
 
-  if [[ -f "$TABLE_FINAL" && -s "$TABLE_FINAL" ]]; then
+  if [[ -f "$TABLE_FINAL" && -f "$REP_DC" ]]; then
     qiime feature-table filter-seqs \
       --i-data "$REP_DC" \
       --i-table "$TABLE_FINAL" \
       --o-filtered-data "$REP_FINAL" \
-      || true
+      2>&1 | tee -a "$WORKDIR/logs/filter_${marker}.log" || true
   fi
 done
 
 ########################
-# 10. Exports finaux
+# 11. Exports finaux
 ########################
 echo "=== Exports finaux ==="
 
@@ -419,10 +435,8 @@ for marker in m1 m2 m3; do
   REP_RAW="$WORKDIR/dada2/rep-seqs_${marker}.qza"
 
   EXPORT_DIR="$WORKDIR/exports/${marker}_final"
-
   mkdir -p "$EXPORT_DIR"
 
-  # Si la table finale existe, on l'utilise ; sinon fallback sur la table brute
   TABLE_TO_USE="$TABLE_RAW"
   REP_TO_USE="$REP_RAW"
 
@@ -431,8 +445,8 @@ for marker in m1 m2 m3; do
     REP_TO_USE="$REP_FINAL"
   fi
 
-  [[ -f "$TABLE_TO_USE" ]] || continue
-  [[ -f "$REP_TO_USE" ]] || continue
+  [[ -f "$TABLE_TO_USE" ]] || { echo "$marker : aucune table disponible, export ignore." ; continue; }
+  [[ -f "$REP_TO_USE" ]] || { echo "$marker : aucune rep-seqs disponible, export ignore." ; continue; }
 
   qiime feature-table summarize \
     --i-table "$TABLE_TO_USE" \
@@ -485,4 +499,4 @@ for marker in m1 m2 m3; do
   fi
 done
 
-echo "=== Pipeline de reprise terminé ==="
+echo "=== Pipeline v3 termine ==="
