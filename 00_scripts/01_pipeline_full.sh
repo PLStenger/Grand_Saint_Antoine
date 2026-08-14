@@ -38,9 +38,10 @@ conda activate rachis-qiime2-2026.7
 ########################
 # 0. General parameters
 ########################
-BASEDIR="/storage/groups/gdec/shared_paleo/E1739/filtermask"
+#BASEDIR="/storage/groups/gdec/shared_paleo/E1739/filtermask"
+BASEDIR="/storage/groups/gdec/shared_paleo/E1739-Ps12-2/DefaultProject"
 #WORKDIR="/home/plstenge/Grand_Saint_Antoine/02_filtermask_pipeline"
-WORKDIR="/storage/groups/gdec/shared_paleo/E1739-Ps12-2/DefaultProject"
+WORKDIR="/home/plstenge/Grand_Saint_Antoine/02_E1739_Ps12_2_DefaultProject"
 # Global taxonomy directory: some reference files (e.g. the SILVA classifier)
 # actually live here rather than inside WORKDIR/taxonomy (bug found during
 # the first run and fixed in the resume script).
