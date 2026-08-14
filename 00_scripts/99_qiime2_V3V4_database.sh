@@ -60,12 +60,13 @@ cd /home/plstenge/Grand_Saint_Antoine/taxonomy
 #  --o-classifier silva-138.2-ssu-nr99-classifier.qza    
 
 qiime feature-classifier extract-reads \
-    --i-sequences silva-138.2-ssu-nr99-seqs-derep-uniq.qza \
-    --p-f-primer GTGYCAGCMGCCGCGGTAA \
-    --p-r-primer CCGYCAATTYMTTTRAGTTT \
-    --p-n-jobs 2 \
-    --p-read-orientation 'forward' \
-    --o-reads silva-138.2-ssu-nr99-seqs-515f-926r.qza
+  --i-sequences silva-138.2-ssu-nr99-seqs-derep-uniq.qza \
+  --p-f-primer GTGYCAGCMGCCGCGGTAA \
+  --p-r-primer CCGYCAATTYMTTTRAGTTT \
+  --p-n-jobs 36 \
+  --p-read-orientation forward \
+  --o-reads silva-138.2-ssu-nr99-seqs-515f-926r.qza \
+  --o-read-extraction-stats silva-138.2-ssu-nr99-seqs-515f-926r-stats.qza
 
 qiime rescript dereplicate \
     --i-sequences silva-138.2-ssu-nr99-seqs-515f-926r.qza \
