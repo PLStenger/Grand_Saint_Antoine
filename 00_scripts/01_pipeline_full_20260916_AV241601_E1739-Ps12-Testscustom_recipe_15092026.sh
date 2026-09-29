@@ -6,8 +6,8 @@
 #SBATCH --mem=1000G
 #SBATCH --mail-user=pierrelouis.stenger@gmail.com
 #SBATCH --mail-type=ALL
-#SBATCH --error=/home/plstenge/Grand_Saint_Antoine/00_scripts/01_pipeline_full.err
-#SBATCH --output=/home/plstenge/Grand_Saint_Antoine/00_scripts/01_pipeline_full.out
+#SBATCH --error=/home/plstenge/Grand_Saint_Antoine/00_scripts/01_pipeline_full_20260916_AV241601_E1739-Ps12-Testscustom_recipe_15092026.err
+#SBATCH --output=/home/plstenge/Grand_Saint_Antoine/00_scripts/01_pipeline_full_20260916_AV241601_E1739-Ps12-Testscustom_recipe_15092026.out
 
 # ==============================================================================
 # ENVIRONMENT SETUP
